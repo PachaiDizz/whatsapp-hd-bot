@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-hd-bot",
-  "version": "1.0.0",https://github.com/PachaiDizz/whatsapp-hd-bot/blob/main/package.json
+  "version": "1.0.0",
   "scripts": {
     "start": "node bot.js"
   },
