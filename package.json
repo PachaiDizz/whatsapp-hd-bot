@@ -1,0 +1,13 @@
+{
+  "name": "whatsapp-hd-bot",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
+    "firebase-admin": "^12.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "pino": "^8.19.0"
+  }
+}
