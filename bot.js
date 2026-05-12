@@ -2,6 +2,7 @@ const http = require('http');
 const twilio = require('twilio');
 const fs = require('fs');
 const path = require('path');
+const Busboy = require('busboy');
 
 const ACCOUNT_SID = 'AC52a45e18747ad646fcbf4d68ab692f92';
 const AUTH_TOKEN = '2ede88d87bba9b92ebf1f1cb86218714';
@@ -12,8 +13,7 @@ const client = twilio(ACCOUNT_SID, AUTH_TOKEN);
 
 console.log('🤖 Bot started!\n');
 
-const server = http.createServer(async (req, res) => {
-  // CORS headers
+const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
@@ -25,64 +25,39 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET') {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.writeHead(200);
     res.end('Bot running');
     return;
   }
 
   if (req.method === 'POST' && req.url === '/upload') {
-    // Parse multipart form data
+    let phone = '';
+    let fileName = '';
     const chunks = [];
-    req.on('data', chunk => chunks.push(chunk));
-    req.on('end', async () => {
+
+    const busboy = Busboy({ headers: req.headers });
+    
+    busboy.on('field', (name, val) => {
+      if (name === 'phone') phone = val;
+    });
+
+    busboy.on('file', (name, file, info) => {
+      fileName = info.filename;
+      file.on('data', (data) => chunks.push(data));
+      file.on('end', () => {});
+    });
+
+    busboy.on('finish', async () => {
       try {
-        const buffer = Buffer.concat(chunks);
-        const contentType = req.headers['content-type'];
-        const boundary = contentType.split('boundary=')[1];
-        
-        // Simple multipart parser
-        const parts = buffer.toString().split('--' + boundary);
-        
-        let phone = '';
-        let videoData = null;
-        let videoName = 'video.mp4';
-        
-        for (const part of parts) {
-          if (part.includes('name="phone"')) {
-            const match = part.match(/\r\n\r\n(.+?)\r\n$/s);
-            if (match) phone = match[1].trim();
-          }
-          if (part.includes('name="video"')) {
-            const match = part.match(/filename="(.+?)"/);
-            if (match) videoName = match[1];
-            const dataMatch = part.match(/\r\n\r\n([\s\S]*?)\r\n$/);
-            if (dataMatch) videoData = Buffer.from(dataMatch[1].trim(), 'binary');
-          }
-        }
+        const videoData = Buffer.concat(chunks);
+        console.log(`📤 Received: ${fileName} (${videoData.length} bytes)`);
+        console.log(`📤 Phone: ${phone}`);
 
-        if (!phone || !videoData) {
-          res.writeHead(400);
-          res.end('Missing phone or video');
-          return;
-        }
-
-        // Save file temporarily
-        const tempPath = path.join('/tmp', videoName);
-        fs.writeFileSync(tempPath, videoData);
-
-        console.log(`📤 Sending to whatsapp:+${phone}...`);
-
-        // Send via Twilio
-        const url = `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers.host}/download/${videoName}`;
-        
-        // Since we can't upload directly to a public URL, use a base64 data URL approach
-        // Or simply send the file via Twilio's mediaUrl
-        
-        // For now, just log and confirm
+        // Send text first
         const msg = await client.messages.create({
           from: FROM_NUMBER,
           to: `whatsapp:+${phone}`,
-          body: '🎥 Your HD video is ready!',
+          body: '🎥 HD Video ready! Forward this to your Status.',
         });
 
         console.log('✅ Message sent! SID:', msg.sid);
@@ -92,10 +67,12 @@ const server = http.createServer(async (req, res) => {
 
       } catch (err) {
         console.error('❌ Error:', err.message);
-        res.writeHead(500);
-        res.end(err.message);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'error', error: err.message }));
       }
     });
+
+    req.pipe(busboy);
     return;
   }
 
@@ -106,4 +83,3 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
-
