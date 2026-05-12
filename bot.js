@@ -1,54 +1,62 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@adiwajshing/baileys');
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const admin = require('firebase-admin');
+const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const http = require('http');
 
 const MY_PHONE = '601116266163';
 
-const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
+const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG || '{}');
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+  const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
+    version,
     auth: state,
-    logger: pino({ level: 'warn' }),
-    printQRInTerminal: true
+    logger: pino({ level: 'info' })
   });
 
-  sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
+  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      console.log('\n📱 SCAN THIS QR CODE:\n');
+      console.log('\n\n📱 SCAN THIS QR CODE:\n');
       qrcode.generate(qr, { small: true });
+      console.log('\nWhatsApp → Linked Devices → Link a Device\n');
     }
 
     if (connection === 'close') {
-      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      if (shouldReconnect) startBot();
+      const code = lastDisconnect?.error instanceof Boom 
+        ? lastDisconnect.error.output.statusCode 
+        : 0;
+      if (code !== DisconnectReason.loggedOut) {
+        console.log('Reconnecting...');
+        startBot();
+      } else {
+        console.log('Logged out!');
+      }
     } else if (connection === 'open') {
-      console.log('✅ Bot connected! Waiting for uploads...');
+      console.log('✅ Connected!');
     }
   });
 
   db.collection('uploads').where('status', '==', 'pending')
     .onSnapshot(async (snapshot) => {
-      for (const doc of snapshot.docChanges()) {
-        if (doc.type === 'added') {
-          const data = doc.data();
+      for (const change of snapshot.docChanges()) {
+        if (change.type === 'added') {
+          const data = change.doc.data();
           try {
             await sock.sendMessage(`${data.phone}@s.whatsapp.net`, {
               video: { url: data.url },
               caption: '🎥 HD Video ready! Forward to Status.'
             });
-            await doc.ref.update({ status: 'sent' });
+            await change.doc.ref.update({ status: 'sent' });
             console.log('✅ Sent!');
-          } catch (err) {
-            console.error('❌ Failed:', err.message);
+          } catch (e) {
+            console.error('❌', e.message);
           }
         }
       }
@@ -57,9 +65,11 @@ async function startBot() {
   sock.ev.on('creds.update', saveCreds);
 }
 
-startBot();
+startBot().catch(err => {
+  console.error('FATAL:', err.message);
+});
 
 http.createServer((req, res) => {
   res.writeHead(200);
-  res.end('Bot running');
+  res.end('OK');
 }).listen(process.env.PORT || 10000);
