@@ -1,14 +1,11 @@
 {
   "name": "whatsapp-hd-bot",
-  "version": "1.0.0",
+  "version": "1.0.0",https://github.com/PachaiDizz/whatsapp-hd-bot/blob/main/package.json
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "6.5.0",
-    "firebase-admin": "12.0.0",
-    "qrcode-terminal": "0.12.0",
-    "pino": "8.19.0",
-    "@hapi/boom": "10.0.1"
+    "twilio": "5.0.0",
+    "firebase-admin": "12.0.0"
   }
 }
