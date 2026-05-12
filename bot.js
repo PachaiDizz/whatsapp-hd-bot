@@ -1,6 +1,5 @@
-const { makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@adiwajshing/baileys');
 const admin = require('firebase-admin');
-const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const http = require('http');
@@ -16,23 +15,20 @@ async function startBot() {
 
   const sock = makeWASocket({
     auth: state,
-    logger: pino({ level: 'warn' })
+    logger: pino({ level: 'warn' }),
+    printQRInTerminal: true
   });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log('\n\n📱 SCAN THIS QR CODE WITH WHATSAPP:\n');
+      console.log('\n📱 SCAN THIS QR CODE:\n');
       qrcode.generate(qr, { small: true });
-      console.log('\nOpen WhatsApp → Settings → Linked Devices → Link a Device\n');
     }
 
     if (connection === 'close') {
-      const shouldReconnect = lastDisconnect?.error instanceof Boom
-        ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
-        : true;
-      console.log('Reconnecting...');
+      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
       if (shouldReconnect) startBot();
     } else if (connection === 'open') {
       console.log('✅ Bot connected! Waiting for uploads...');
@@ -44,19 +40,15 @@ async function startBot() {
       for (const doc of snapshot.docChanges()) {
         if (doc.type === 'added') {
           const data = doc.data();
-          const targetJid = `${data.phone}@s.whatsapp.net`;
-          console.log(`📤 Sending to ${targetJid}...`);
-
           try {
-            await sock.sendMessage(targetJid, {
+            await sock.sendMessage(`${data.phone}@s.whatsapp.net`, {
               video: { url: data.url },
               caption: '🎥 HD Video ready! Forward to Status.'
             });
-            await doc.ref.update({ status: 'sent', sentAt: new Date() });
+            await doc.ref.update({ status: 'sent' });
             console.log('✅ Sent!');
           } catch (err) {
             console.error('❌ Failed:', err.message);
-            await doc.ref.update({ status: 'failed', error: err.message });
           }
         }
       }
