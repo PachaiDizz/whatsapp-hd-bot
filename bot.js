@@ -11,6 +11,9 @@ const PORT = process.env.PORT || 10000;
 
 const client = twilio(ACCOUNT_SID, AUTH_TOKEN);
 
+// Serve uploaded files
+if (!fs.existsSync('/tmp/uploads')) fs.mkdirSync('/tmp/uploads');
+
 console.log('🤖 Bot started!\n');
 
 const server = http.createServer((req, res) => {
@@ -21,6 +24,24 @@ const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(200);
     res.end();
+    return;
+  }
+
+  // Serve uploaded files
+  if (req.method === 'GET' && req.url.startsWith('/files/')) {
+    const fileName = req.url.replace('/files/', '');
+    const filePath = path.join('/tmp/uploads', fileName);
+    if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath);
+      res.writeHead(200, {
+        'Content-Type': 'video/mp4',
+        'Content-Length': stat.size
+      });
+      fs.createReadStream(filePath).pipe(res);
+    } else {
+      res.writeHead(404);
+      res.end('File not found');
+    }
     return;
   }
 
@@ -36,7 +57,7 @@ const server = http.createServer((req, res) => {
     const chunks = [];
 
     const busboy = Busboy({ headers: req.headers });
-    
+
     busboy.on('field', (name, val) => {
       if (name === 'phone') phone = val;
     });
@@ -44,20 +65,31 @@ const server = http.createServer((req, res) => {
     busboy.on('file', (name, file, info) => {
       fileName = info.filename;
       file.on('data', (data) => chunks.push(data));
-      file.on('end', () => {});
     });
 
     busboy.on('finish', async () => {
       try {
         const videoData = Buffer.concat(chunks);
-        console.log(`📤 Received: ${fileName} (${videoData.length} bytes)`);
-        console.log(`📤 Phone: ${phone}`);
+        const uniqueName = `${Date.now()}_${fileName}`;
+        const filePath = path.join('/tmp/uploads', uniqueName);
 
-        // Send text first
+        // Save file
+        fs.writeFileSync(filePath, videoData);
+        console.log(`📤 Saved: ${uniqueName} (${videoData.length} bytes)`);
+
+        // Get public URL
+        const protocol = req.headers['x-forwarded-proto'] || 'https';
+        const host = req.headers.host;
+        const fileUrl = `${protocol}://${host}/files/${uniqueName}`;
+
+        console.log(`📤 File URL: ${fileUrl}`);
+
+        // Send via Twilio
         const msg = await client.messages.create({
           from: FROM_NUMBER,
           to: `whatsapp:+${phone}`,
-          body: '🎥 HD Video ready! Forward this to your Status.',
+          mediaUrl: [fileUrl],
+          body: '🎥 HD Video ready! Forward this to your Status.'
         });
 
         console.log('✅ Message sent! SID:', msg.sid);
