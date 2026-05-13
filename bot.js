@@ -1,11 +1,15 @@
 const http = require('http');
+const twilio = require('twilio');
 const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
 
-const TELEGRAM_TOKEN = '8782072387:AAE0EluWwXJUBL8g2IvNcsXZXNvoDOnqKZw';
-const CHAT_ID = '6209105794';
+const ACCOUNT_SID = 'AC52a45e18747ad646fcbf4d68ab692f92';
+const AUTH_TOKEN = '2ede88d87bba9b92ebf1f1cb86218714';
+const FROM_NUMBER = 'whatsapp:+14155238886';
 const PORT = process.env.PORT || 10000;
+
+const client = twilio(ACCOUNT_SID, AUTH_TOKEN);
 
 if (!fs.existsSync('/tmp/uploads')) fs.mkdirSync('/tmp/uploads');
 
@@ -59,38 +63,33 @@ const server = http.createServer((req, res) => {
     });
 
     busboy.on('finish', async () => {
-      const videoData = Buffer.concat(chunks);
-      const uniqueName = `${Date.now()}_${fileName}`;
-      const filePath = path.join('/tmp/uploads', uniqueName);
-      fs.writeFileSync(filePath, videoData);
-
-      const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const host = req.headers.host;
-      const fileUrl = `${protocol}://${host}/files/${uniqueName}`;
-
-      console.log(`📤 Saved: ${uniqueName} (${videoData.length} bytes)`);
-
-      // Send via Telegram
-      const telegramUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendVideo`;
-      const telegramBody = JSON.stringify({
-        chat_id: CHAT_ID,
-        video: fileUrl,
-        caption: '🎥 HD Video ready! Save this and share to WhatsApp Status.'
-      });
-
       try {
-        const tgRes = await fetch(telegramUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: telegramBody
+        const videoData = Buffer.concat(chunks);
+        const uniqueName = `${Date.now()}_${fileName}`;
+        const filePath = path.join('/tmp/uploads', uniqueName);
+        fs.writeFileSync(filePath, videoData);
+
+        const protocol = req.headers['x-forwarded-proto'] || 'https';
+        const host = req.headers.host;
+        const fileUrl = `${protocol}://${host}/files/${uniqueName}`;
+
+        console.log(`📤 Sending to ${phone}...`);
+        console.log(`📤 File URL: ${fileUrl}`);
+
+        const msg = await client.messages.create({
+          from: FROM_NUMBER,
+          to: `whatsapp:+${phone}`,
+          mediaUrl: [fileUrl],
+          body: '🎥 HD Video ready! Forward this to your Status.'
         });
-        const tgJson = await tgRes.json();
-        console.log('✅ Telegram response:', JSON.stringify(tgJson));
-        
+
+        console.log('✅ Sent! SID:', msg.sid);
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'sent', telegram: tgJson }));
+        res.end(JSON.stringify({ status: 'sent', sid: msg.sid }));
+
       } catch (err) {
-        console.error('❌ Telegram error:', err.message);
+        console.error('❌ Error:', err.message);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'error', error: err.message }));
       }
@@ -107,6 +106,3 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
-
-
-
