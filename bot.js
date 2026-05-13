@@ -5,7 +5,7 @@ const path = require('path');
 const Busboy = require('busboy');
 
 const ACCOUNT_SID = 'AC52a45e18747ad646fcbf4d68ab692f92';
-const AUTH_TOKEN = '2ede88d87bba9b92ebf1f1cb86218714';
+const AUTH_TOKEN = 'ebb3d16b09fe398eb2936401c4e999aa';
 const FROM_NUMBER = 'whatsapp:+14155238886';
 const PORT = process.env.PORT || 10000;
 
