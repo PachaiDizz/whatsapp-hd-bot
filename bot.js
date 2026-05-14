@@ -1,19 +1,55 @@
 const http = require('http');
-const twilio = require('twilio');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
 
-const ACCOUNT_SID = 'AC52a45e18747ad646fcbf4d68ab692f92';
-const AUTH_TOKEN = 'ebb3d16b09fe398eb2936401c4e999aa';
-const FROM_NUMBER = 'whatsapp:+14155238886';
+// WhatsApp Cloud API
+const ACCESS_TOKEN = 'EAAhhCgfBBmcBRUc15oZAVScDFw2Fg8JFeEfBZBAnCgyZCQeNFZCIDJVO8e3wD3yOB4rcM4HJS2A2EKC7qZAwUX2dCVJEIOF7ZAsxeJOIDD7hxLKAMsANjfrkF0NOdoZAV7X8tUMJOGChfOZAXUY0suhynWKImDF3DVIEWsZB1ymXGQjxfHpZCO0Qd42T1R0zesgWmbfJUZCRXEGtrbXTBuH7z631c2tsqM7fxQQZC2WclHoZCmfeRNTfZBxs5eXcaAEFNCFRucdxLnyT2nqxmNRDLtZBZBvHVgZDZD';
+const PHONE_NUMBER_ID = '1096393916895966';
+const TO_NUMBER = '601116266163';
 const PORT = process.env.PORT || 10000;
-
-const client = twilio(ACCOUNT_SID, AUTH_TOKEN);
 
 if (!fs.existsSync('/tmp/uploads')) fs.mkdirSync('/tmp/uploads');
 
-console.log('🤖 Bot started!\n');
+console.log('🤖 Bot started (WhatsApp Cloud API)!\n');
+
+function sendWhatsAppMessage(fileUrl, caption) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: TO_NUMBER,
+      type: 'video',
+      video: {
+        link: fileUrl,
+        caption: caption
+      }
+    });
+
+    const options = {
+      hostname: 'graph.facebook.com',
+      path: `/v18.0/${PHONE_NUMBER_ID}/messages`,
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${ACCESS_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => {
+        console.log('📤 WhatsApp response:', body);
+        resolve(JSON.parse(body));
+      });
+    });
+
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
 
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -73,20 +109,14 @@ const server = http.createServer((req, res) => {
         const host = req.headers.host;
         const fileUrl = `${protocol}://${host}/files/${uniqueName}`;
 
-        console.log(`📤 Sending to ${phone}...`);
+        console.log(`📤 Sending HD video...`);
         console.log(`📤 File URL: ${fileUrl}`);
 
-        const msg = await client.messages.create({
-          from: FROM_NUMBER,
-          to: `whatsapp:+${phone}`,
-          mediaUrl: [fileUrl],
-          body: '🎥 HD Video ready! Forward this to your Status.'
-        });
-
-        console.log('✅ Sent! SID:', msg.sid);
+        const result = await sendWhatsAppMessage(fileUrl, '🎥 HD Video ready! Forward this to your Status.');
+        console.log('✅ Result:', JSON.stringify(result));
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'sent', sid: msg.sid }));
+        res.end(JSON.stringify({ status: 'sent', result }));
 
       } catch (err) {
         console.error('❌ Error:', err.message);
@@ -106,3 +136,4 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
+
