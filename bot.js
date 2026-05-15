@@ -1,58 +1,29 @@
 const http = require('http');
-const https = require('https');
+const twilio = require('twilio');
 const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
 
-// Load from environment variables (NEVER hardcode)
-const ACCESS_TOKEN = process.env.ACCESS_TOKEN || '';
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '1089394250929176';
+const ACCOUNT_SID = process.env.TWILIO_SID || 'ACe59ae2cb5e351127addc181fd1447a7d';
+const AUTH_TOKEN = process.env.TWILIO_TOKEN || '4d4eb664210553dbe04cc6408bfaa7c1';
+const FROM_NUMBER = 'whatsapp:+14155238886';
 const TO_NUMBER = process.env.TO_NUMBER || '601116266163';
 const PORT = process.env.PORT || 10000;
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB limit
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const UPLOAD_DIR = '/tmp/uploads';
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-console.log('🤖 Bot started (Secure WhatsApp Cloud API)!\n');
+const client = twilio(ACCOUNT_SID, AUTH_TOKEN);
 
-// Clean old files on startup
+console.log('🤖 Bot started (Twilio WhatsApp)!\n');
+
 fs.readdir(UPLOAD_DIR, (err, files) => {
   if (!err) {
     files.forEach(f => fs.unlinkSync(path.join(UPLOAD_DIR, f)));
     console.log('🧹 Cleaned old uploads');
   }
 });
-
-function sendWhatsAppMessage(fileUrl, caption, isVideo) {
-  return new Promise((resolve, reject) => {
-    const data = JSON.stringify({
-      messaging_product: 'whatsapp',
-      to: TO_NUMBER,
-      type: isVideo ? 'video' : 'image',
-      [isVideo ? 'video' : 'image']: { link: fileUrl, caption: caption }
-    });
-
-    const options = {
-      hostname: 'graph.facebook.com',
-      path: `/v18.0/${PHONE_NUMBER_ID}/messages`,
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${ACCESS_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', (chunk) => body += chunk);
-      res.on('end', () => resolve(JSON.parse(body)));
-    });
-    req.on('error', reject);
-    req.write(data);
-    req.end();
-  });
-}
 
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -65,15 +36,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Serve uploaded files
   if (req.method === 'GET' && req.url.startsWith('/files/')) {
     const fileName = path.basename(req.url.replace('/files/', ''));
     const filePath = path.join(UPLOAD_DIR, fileName);
     if (fs.existsSync(filePath)) {
       const stat = fs.statSync(filePath);
-      const ext = path.extname(fileName).toLowerCase();
-      const mime = ext === '.mp4' ? 'video/mp4' : ext === '.jpg' ? 'image/jpeg' : 'application/octet-stream';
-      res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size });
+      res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': stat.size });
       fs.createReadStream(filePath).pipe(res);
     } else {
       res.writeHead(404);
@@ -88,12 +56,9 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Upload endpoint
   if (req.method === 'POST' && req.url === '/upload') {
-    let phone = '';
     let fileName = '';
     let fileSize = 0;
-    let isVideo = true;
     const chunks = [];
 
     const busboy = Busboy({ 
@@ -101,33 +66,16 @@ const server = http.createServer((req, res) => {
       limits: { fileSize: MAX_FILE_SIZE }
     });
 
-    busboy.on('field', (name, val) => {
-      if (name === 'phone') phone = val;
-    });
-
     busboy.on('file', (name, file, info) => {
       const { filename, mimeType } = info;
       fileName = filename;
       
-      // Accept any media file (video or image)
       const isMedia = mimeType.includes('video') || 
                       mimeType.includes('image') ||
                       filename.endsWith('.mp4') || 
-                      filename.endsWith('.mov') ||
-                      filename.endsWith('.avi') ||
                       filename.endsWith('.jpg') ||
                       filename.endsWith('.jpeg') ||
-                      filename.endsWith('.png') ||
-                      filename.endsWith('.webp');
-      
-      // Detect if it's an image
-      if (mimeType.includes('image') || 
-          filename.endsWith('.jpg') || 
-          filename.endsWith('.jpeg') ||
-          filename.endsWith('.png') ||
-          filename.endsWith('.webp')) {
-        isVideo = false;
-      }
+                      filename.endsWith('.png');
 
       if (!isMedia) {
         file.resume();
@@ -161,29 +109,22 @@ const server = http.createServer((req, res) => {
         const host = req.headers.host;
         const fileUrl = `${protocol}://${host}/files/${uniqueName}`;
 
-        const mediaType = isVideo ? 'Video' : 'Photo';
-        console.log(`📤 Sending HD ${mediaType} (${(fileSize/1048576).toFixed(2)} MB)...`);
+        console.log(`📤 Sending (${(fileSize/1048576).toFixed(2)} MB)...`);
 
-        const result = await sendWhatsAppMessage(
-          fileUrl, 
-          `🎥 HD ${mediaType} ready! Forward this to your Status.`,
-          isVideo
-        );
+        const msg = await client.messages.create({
+          from: FROM_NUMBER,
+          to: `whatsapp:+${TO_NUMBER}`,
+          mediaUrl: [fileUrl],
+          body: '🎥 HD Media ready! Forward to your Status.'
+        });
 
-        if (result.error) {
-          console.error('❌ WhatsApp error:', result.error.message);
-          res.writeHead(500);
-          res.end(JSON.stringify({ status: 'error', error: result.error.message }));
-        } else {
-          console.log('✅ Sent!');
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'sent' }));
+        console.log('✅ Sent! SID:', msg.sid);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'sent' }));
 
-          // Delete file after 5 minutes
-          setTimeout(() => {
-            try { fs.unlinkSync(filePath); } catch (_) {}
-          }, 5 * 60 * 1000);
-        }
+        setTimeout(() => {
+          try { fs.unlinkSync(filePath); } catch (_) {}
+        }, 5 * 60 * 1000);
 
       } catch (err) {
         console.error('❌ Error:', err.message);
