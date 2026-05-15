@@ -4,8 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
 
-const ACCOUNT_SID = process.env.TWILIO_SID || 'ACe59ae2cb5e351127addc181fd1447a7d';
-const AUTH_TOKEN = process.env.TWILIO_TOKEN || '9f5fcebb6ac7ac2c279da965b3ca6d38';
+// Load from Render environment variables ONLY (safe for GitHub)
+const ACCOUNT_SID = process.env.TWILIO_SID || '';
+const AUTH_TOKEN = process.env.TWILIO_TOKEN || '';
 const FROM_NUMBER = 'whatsapp:+14155238886';
 const TO_NUMBER = process.env.TO_NUMBER || '601116266163';
 const PORT = process.env.PORT || 10000;
@@ -14,8 +15,9 @@ const UPLOAD_DIR = '/tmp/uploads';
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-console.log('🤖 Bot started (Twilio Direct API)!');
-console.log('🔑 SID:', ACCOUNT_SID.substring(0, 8) + '...');
+console.log('🤖 Bot started (Twilio Media Mode)!');
+console.log('🔑 SID:', ACCOUNT_SID ? ACCOUNT_SID.substring(0, 8) + '...' : 'NOT SET');
+console.log('🔑 Token:', AUTH_TOKEN ? 'SET' : 'NOT SET');
 
 fs.readdir(UPLOAD_DIR, (err, files) => {
   if (!err) {
@@ -24,13 +26,13 @@ fs.readdir(UPLOAD_DIR, (err, files) => {
   }
 });
 
-function sendTwilioMessage(fileUrl) {
+function sendTwilioMedia(fileUrl, isVideo) {
   return new Promise((resolve, reject) => {
-    // Text-only test first
     const body = new URLSearchParams({
       From: FROM_NUMBER,
       To: `whatsapp:+${TO_NUMBER}`,
-      Body: '🧪 Test message from bot - text works!'
+      MediaUrl: fileUrl,
+      Body: isVideo ? '🎥 HD Video ready! Forward to your Status.' : '📸 HD Photo ready! Forward to your Status.'
     }).toString();
 
     const options = {
@@ -72,7 +74,9 @@ const server = http.createServer((req, res) => {
     const filePath = path.join(UPLOAD_DIR, fileName);
     if (fs.existsSync(filePath)) {
       const stat = fs.statSync(filePath);
-      res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': stat.size });
+      const ext = path.extname(fileName).toLowerCase();
+      const mime = ext === '.mp4' ? 'video/mp4' : ext === '.jpg' ? 'image/jpeg' : 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size });
       fs.createReadStream(filePath).pipe(res);
     } else {
       res.writeHead(404);
@@ -90,6 +94,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/upload') {
     let fileName = '';
     let fileSize = 0;
+    let isVideo = true;
     const chunks = [];
 
     const busboy = Busboy({ 
@@ -111,6 +116,14 @@ const server = http.createServer((req, res) => {
       if (!isMedia) {
         file.resume();
         return;
+      }
+
+      // Detect if photo
+      if (mimeType.includes('image') || 
+          filename.endsWith('.jpg') || 
+          filename.endsWith('.jpeg') ||
+          filename.endsWith('.png')) {
+        isVideo = false;
       }
 
       file.on('data', (data) => {
@@ -136,22 +149,26 @@ const server = http.createServer((req, res) => {
         const filePath = path.join(UPLOAD_DIR, uniqueName);
         fs.writeFileSync(filePath, videoData);
 
-        console.log(`📤 Uploaded (${(fileSize/1048576).toFixed(2)} MB)`);
-        console.log(`🧪 Sending test message...`);
+        const protocol = req.headers['x-forwarded-proto'] || 'https';
+        const host = req.headers.host;
+        const fileUrl = `${protocol}://${host}/files/${uniqueName}`;
 
-        const result = await sendTwilioMessage();
+        const mediaType = isVideo ? 'Video' : 'Photo';
+        console.log(`📤 Sending HD ${mediaType} (${(fileSize/1048576).toFixed(2)} MB)...`);
 
-        console.log('📨 Twilio raw response:', JSON.stringify(result));
+        const result = await sendTwilioMedia(fileUrl, isVideo);
+
+        console.log('📨 Twilio response:', JSON.stringify(result));
 
         if (!result.sid) {
-          const errMsg = result.message || result.error_message || JSON.stringify(result);
-          console.error('❌ Twilio error - Status:', result.status, 'Code:', result.code, 'Message:', errMsg);
+          const errMsg = result.message || result.error_message || 'Unknown error';
+          console.error('❌ Failed:', errMsg);
           res.writeHead(500);
           res.end(JSON.stringify({ status: 'error', error: errMsg }));
         } else {
-          console.log('✅ Text sent! SID:', result.sid);
+          console.log('✅ Sent! SID:', result.sid);
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'sent', sid: result.sid }));
+          res.end(JSON.stringify({ status: 'sent' }));
 
           setTimeout(() => {
             try { fs.unlinkSync(filePath); } catch (_) {}
