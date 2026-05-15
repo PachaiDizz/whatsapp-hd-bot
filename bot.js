@@ -141,15 +141,18 @@ const server = http.createServer((req, res) => {
         const fileUrl = `${protocol}://${host}/files/${uniqueName}`;
 
         console.log(`📤 Sending (${(fileSize/1048576).toFixed(2)} MB)...`);
+        console.log(`🔗 File URL: ${fileUrl}`);
 
         const result = await sendTwilioMessage(fileUrl);
+
+        console.log('📤 Full Twilio response:', JSON.stringify(result));
 
         if (result.error_message) {
           console.error('❌ Twilio error:', result.error_message);
           res.writeHead(500);
           res.end(JSON.stringify({ status: 'error', error: result.error_message }));
         } else {
-          console.log('✅ Sent! SID:', result.sid);
+          console.log('✅ Sent! SID:', result.sid || 'sent');
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ status: 'sent' }));
 
@@ -176,3 +179,4 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
+
