@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
 
-// Multiple Twilio accounts for more daily messages
+// Multiple Twilio accounts for more daily messages (15/day)
 const ACCOUNTS = [
   {
     sid: 'ACe59ae2cb5e351127addc181fd1447a7d',
@@ -14,7 +14,12 @@ const ACCOUNTS = [
   {
     sid: 'AC1171ed8c0b982bf93f1abaece8bedb06',
     token: process.env.TWILIO_TOKEN_2 || '',
-    from: 'whatsapp:+14155238886' // Update if different
+    from: 'whatsapp:+14155238886'
+  },
+  {
+    sid: 'AC52a45e18747ad646fcbf4d68ab692f92',
+    token: process.env.TWILIO_TOKEN_3 || '',
+    from: 'whatsapp:+14155238886'
   }
 ];
 
@@ -26,7 +31,7 @@ const UPLOAD_DIR = '/tmp/uploads';
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-console.log('🤖 Bot started (Multi-Account Twilio)!');
+console.log('🤖 Bot started (3-Account Twilio)!');
 console.log('🔑 Accounts loaded:', ACCOUNTS.length);
 console.log('📊 Max messages/day:', ACCOUNTS.length * 5);
 
@@ -85,7 +90,9 @@ const server = http.createServer((req, res) => {
     const filePath = path.join(UPLOAD_DIR, fileName);
     if (fs.existsSync(filePath)) {
       const stat = fs.statSync(filePath);
-      res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': stat.size });
+      const ext = path.extname(fileName).toLowerCase();
+      const mime = ext === '.mp4' ? 'video/mp4' : ext === '.jpg' ? 'image/jpeg' : 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size });
       fs.createReadStream(filePath).pipe(res);
     } else {
       res.writeHead(404);
@@ -159,7 +166,7 @@ const server = http.createServer((req, res) => {
         const account = ACCOUNTS[accountIndex % ACCOUNTS.length];
         accountIndex++;
 
-        console.log(`📤 Using account ${accountIndex}: ${account.from} (SID: ${account.sid.substring(0, 8)}...)`);
+        console.log(`📤 Account ${((accountIndex - 1) % ACCOUNTS.length) + 1}: ${account.sid.substring(0, 8)}...`);
         console.log(`📤 Sending (${(fileSize/1048576).toFixed(2)} MB)...`);
 
         const result = await sendTwilioMedia(fileUrl, isVideo, account);
@@ -171,7 +178,7 @@ const server = http.createServer((req, res) => {
           // Try next account
           const nextAccount = ACCOUNTS[accountIndex % ACCOUNTS.length];
           accountIndex++;
-          console.log(`🔄 Trying account ${accountIndex}: ${nextAccount.from}...`);
+          console.log(`🔄 Trying account ${((accountIndex - 1) % ACCOUNTS.length) + 1}...`);
           
           const retryResult = await sendTwilioMedia(fileUrl, isVideo, nextAccount);
           
