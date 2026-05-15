@@ -4,10 +4,21 @@ const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
 
-// Load from Render environment variables ONLY (safe for GitHub)
-const ACCOUNT_SID = process.env.TWILIO_SID || '';
-const AUTH_TOKEN = process.env.TWILIO_TOKEN || '';
-const FROM_NUMBER = 'whatsapp:+14155238886';
+// Multiple Twilio accounts for more daily messages
+const ACCOUNTS = [
+  {
+    sid: 'ACe59ae2cb5e351127addc181fd1447a7d',
+    token: process.env.TWILIO_TOKEN_1 || '',
+    from: 'whatsapp:+14155238886'
+  },
+  {
+    sid: 'AC1171ed8c0b982bf93f1abaece8bedb06',
+    token: process.env.TWILIO_TOKEN_2 || '',
+    from: 'whatsapp:+14155238886' // Update if different
+  }
+];
+
+let accountIndex = 0;
 const TO_NUMBER = process.env.TO_NUMBER || '601116266163';
 const PORT = process.env.PORT || 10000;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -15,9 +26,9 @@ const UPLOAD_DIR = '/tmp/uploads';
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-console.log('🤖 Bot started (Twilio Media Mode)!');
-console.log('🔑 SID:', ACCOUNT_SID ? ACCOUNT_SID.substring(0, 8) + '...' : 'NOT SET');
-console.log('🔑 Token:', AUTH_TOKEN ? 'SET' : 'NOT SET');
+console.log('🤖 Bot started (Multi-Account Twilio)!');
+console.log('🔑 Accounts loaded:', ACCOUNTS.length);
+console.log('📊 Max messages/day:', ACCOUNTS.length * 5);
 
 fs.readdir(UPLOAD_DIR, (err, files) => {
   if (!err) {
@@ -26,10 +37,10 @@ fs.readdir(UPLOAD_DIR, (err, files) => {
   }
 });
 
-function sendTwilioMedia(fileUrl, isVideo) {
+function sendTwilioMedia(fileUrl, isVideo, account) {
   return new Promise((resolve, reject) => {
     const body = new URLSearchParams({
-      From: FROM_NUMBER,
+      From: account.from,
       To: `whatsapp:+${TO_NUMBER}`,
       MediaUrl: fileUrl,
       Body: isVideo ? '🎥 HD Video ready! Forward to your Status.' : '📸 HD Photo ready! Forward to your Status.'
@@ -37,10 +48,10 @@ function sendTwilioMedia(fileUrl, isVideo) {
 
     const options = {
       hostname: 'api.twilio.com',
-      path: `/2010-04-01/Accounts/${ACCOUNT_SID}/Messages.json`,
+      path: `/2010-04-01/Accounts/${account.sid}/Messages.json`,
       method: 'POST',
       headers: {
-        'Authorization': 'Basic ' + Buffer.from(`${ACCOUNT_SID}:${AUTH_TOKEN}`).toString('base64'),
+        'Authorization': 'Basic ' + Buffer.from(`${account.sid}:${account.token}`).toString('base64'),
         'Content-Type': 'application/x-www-form-urlencoded',
         'Content-Length': Buffer.byteLength(body)
       }
@@ -74,9 +85,7 @@ const server = http.createServer((req, res) => {
     const filePath = path.join(UPLOAD_DIR, fileName);
     if (fs.existsSync(filePath)) {
       const stat = fs.statSync(filePath);
-      const ext = path.extname(fileName).toLowerCase();
-      const mime = ext === '.mp4' ? 'video/mp4' : ext === '.jpg' ? 'image/jpeg' : 'application/octet-stream';
-      res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size });
+      res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': stat.size });
       fs.createReadStream(filePath).pipe(res);
     } else {
       res.writeHead(404);
@@ -118,20 +127,13 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      // Detect if photo
-      if (mimeType.includes('image') || 
-          filename.endsWith('.jpg') || 
-          filename.endsWith('.jpeg') ||
-          filename.endsWith('.png')) {
+      if (mimeType.includes('image') || filename.endsWith('.jpg') || filename.endsWith('.jpeg') || filename.endsWith('.png')) {
         isVideo = false;
       }
 
       file.on('data', (data) => {
         fileSize += data.length;
-        if (fileSize > MAX_FILE_SIZE) {
-          file.destroy();
-          return;
-        }
+        if (fileSize > MAX_FILE_SIZE) { file.destroy(); return; }
         chunks.push(data);
       });
     });
@@ -153,18 +155,34 @@ const server = http.createServer((req, res) => {
         const host = req.headers.host;
         const fileUrl = `${protocol}://${host}/files/${uniqueName}`;
 
-        const mediaType = isVideo ? 'Video' : 'Photo';
-        console.log(`📤 Sending HD ${mediaType} (${(fileSize/1048576).toFixed(2)} MB)...`);
+        // Rotate accounts
+        const account = ACCOUNTS[accountIndex % ACCOUNTS.length];
+        accountIndex++;
 
-        const result = await sendTwilioMedia(fileUrl, isVideo);
+        console.log(`📤 Using account ${accountIndex}: ${account.from} (SID: ${account.sid.substring(0, 8)}...)`);
+        console.log(`📤 Sending (${(fileSize/1048576).toFixed(2)} MB)...`);
 
-        console.log('📨 Twilio response:', JSON.stringify(result));
+        const result = await sendTwilioMedia(fileUrl, isVideo, account);
 
         if (!result.sid) {
-          const errMsg = result.message || result.error_message || 'Unknown error';
+          const errMsg = result.message || 'Unknown error';
           console.error('❌ Failed:', errMsg);
-          res.writeHead(500);
-          res.end(JSON.stringify({ status: 'error', error: errMsg }));
+          
+          // Try next account
+          const nextAccount = ACCOUNTS[accountIndex % ACCOUNTS.length];
+          accountIndex++;
+          console.log(`🔄 Trying account ${accountIndex}: ${nextAccount.from}...`);
+          
+          const retryResult = await sendTwilioMedia(fileUrl, isVideo, nextAccount);
+          
+          if (!retryResult.sid) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ status: 'error', error: 'All accounts exhausted' }));
+          } else {
+            console.log('✅ Sent on retry! SID:', retryResult.sid);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'sent' }));
+          }
         } else {
           console.log('✅ Sent! SID:', result.sid);
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -193,3 +211,4 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
+
