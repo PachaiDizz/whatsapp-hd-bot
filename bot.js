@@ -26,11 +26,11 @@ fs.readdir(UPLOAD_DIR, (err, files) => {
 
 function sendTwilioMessage(fileUrl) {
   return new Promise((resolve, reject) => {
+    // Text-only test first
     const body = new URLSearchParams({
       From: FROM_NUMBER,
       To: `whatsapp:+${TO_NUMBER}`,
-      MediaUrl: fileUrl,
-      Body: '🎥 HD Media ready! Forward to your Status.'
+      Body: '🧪 Test message from bot - text works!'
     }).toString();
 
     const options = {
@@ -136,25 +136,22 @@ const server = http.createServer((req, res) => {
         const filePath = path.join(UPLOAD_DIR, uniqueName);
         fs.writeFileSync(filePath, videoData);
 
-        const protocol = req.headers['x-forwarded-proto'] || 'https';
-        const host = req.headers.host;
-        const fileUrl = `${protocol}://${host}/files/${uniqueName}`;
+        console.log(`📤 Uploaded (${(fileSize/1048576).toFixed(2)} MB)`);
+        console.log(`🧪 Sending test message...`);
 
-        console.log(`📤 Sending (${(fileSize/1048576).toFixed(2)} MB)...`);
-        console.log(`🔗 File URL: ${fileUrl}`);
+        const result = await sendTwilioMessage();
 
-        const result = await sendTwilioMessage(fileUrl);
+        console.log('📨 Twilio raw response:', JSON.stringify(result));
 
-        console.log('📤 Full Twilio response:', JSON.stringify(result));
-
-        if (result.error_message) {
-          console.error('❌ Twilio error:', result.error_message);
+        if (!result.sid) {
+          const errMsg = result.message || result.error_message || JSON.stringify(result);
+          console.error('❌ Twilio error - Status:', result.status, 'Code:', result.code, 'Message:', errMsg);
           res.writeHead(500);
-          res.end(JSON.stringify({ status: 'error', error: result.error_message }));
+          res.end(JSON.stringify({ status: 'error', error: errMsg }));
         } else {
-          console.log('✅ Sent! SID:', result.sid || 'sent');
+          console.log('✅ Text sent! SID:', result.sid);
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'sent' }));
+          res.end(JSON.stringify({ status: 'sent', sid: result.sid }));
 
           setTimeout(() => {
             try { fs.unlinkSync(filePath); } catch (_) {}
@@ -179,4 +176,3 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
-
