@@ -1,5 +1,5 @@
 const http = require('http');
-const twilio = require('twilio');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
@@ -14,11 +14,8 @@ const UPLOAD_DIR = '/tmp/uploads';
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-const client = twilio(ACCOUNT_SID, AUTH_TOKEN);
-
-console.log('🤖 Bot started (Twilio WhatsApp)!');
+console.log('🤖 Bot started (Twilio Direct API)!');
 console.log('🔑 SID:', ACCOUNT_SID.substring(0, 8) + '...');
-console.log('🔑 Token:', AUTH_TOKEN ? 'YES (' + AUTH_TOKEN.length + ' chars)' : 'NO');
 
 fs.readdir(UPLOAD_DIR, (err, files) => {
   if (!err) {
@@ -26,6 +23,38 @@ fs.readdir(UPLOAD_DIR, (err, files) => {
     console.log('🧹 Cleaned old uploads');
   }
 });
+
+function sendTwilioMessage(fileUrl) {
+  return new Promise((resolve, reject) => {
+    const body = new URLSearchParams({
+      From: FROM_NUMBER,
+      To: `whatsapp:+${TO_NUMBER}`,
+      MediaUrl: fileUrl,
+      Body: '🎥 HD Media ready! Forward to your Status.'
+    }).toString();
+
+    const options = {
+      hostname: 'api.twilio.com',
+      path: `/2010-04-01/Accounts/${ACCOUNT_SID}/Messages.json`,
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + Buffer.from(`${ACCOUNT_SID}:${AUTH_TOKEN}`).toString('base64'),
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => resolve(JSON.parse(data)));
+    });
+
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
 
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -113,20 +142,21 @@ const server = http.createServer((req, res) => {
 
         console.log(`📤 Sending (${(fileSize/1048576).toFixed(2)} MB)...`);
 
-        const msg = await client.messages.create({
-          from: FROM_NUMBER,
-          to: `whatsapp:+${TO_NUMBER}`,
-          mediaUrl: [fileUrl],
-          body: '🎥 HD Media ready! Forward to your Status.'
-        });
+        const result = await sendTwilioMessage(fileUrl);
 
-        console.log('✅ Sent! SID:', msg.sid);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'sent' }));
+        if (result.error_message) {
+          console.error('❌ Twilio error:', result.error_message);
+          res.writeHead(500);
+          res.end(JSON.stringify({ status: 'error', error: result.error_message }));
+        } else {
+          console.log('✅ Sent! SID:', result.sid);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'sent' }));
 
-        setTimeout(() => {
-          try { fs.unlinkSync(filePath); } catch (_) {}
-        }, 5 * 60 * 1000);
+          setTimeout(() => {
+            try { fs.unlinkSync(filePath); } catch (_) {}
+          }, 5 * 60 * 1000);
+        }
 
       } catch (err) {
         console.error('❌ Error:', err.message);
@@ -146,4 +176,3 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
-
