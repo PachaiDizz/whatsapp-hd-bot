@@ -10,7 +10,6 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '1089394250929176';
 const TO_NUMBER = process.env.TO_NUMBER || '601116266163';
 const PORT = process.env.PORT || 10000;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB limit
-const ALLOWED_TYPES = ['video/mp4', 'video/quicktime', 'video/x-msvideo'];
 const UPLOAD_DIR = '/tmp/uploads';
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
@@ -25,13 +24,13 @@ fs.readdir(UPLOAD_DIR, (err, files) => {
   }
 });
 
-function sendWhatsAppMessage(fileUrl, caption) {
+function sendWhatsAppMessage(fileUrl, caption, isVideo) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify({
       messaging_product: 'whatsapp',
       to: TO_NUMBER,
-      type: 'video',
-      video: { link: fileUrl, caption: caption }
+      type: isVideo ? 'video' : 'image',
+      [isVideo ? 'video' : 'image']: { link: fileUrl, caption: caption }
     });
 
     const options = {
@@ -72,7 +71,9 @@ const server = http.createServer((req, res) => {
     const filePath = path.join(UPLOAD_DIR, fileName);
     if (fs.existsSync(filePath)) {
       const stat = fs.statSync(filePath);
-      res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': stat.size });
+      const ext = path.extname(fileName).toLowerCase();
+      const mime = ext === '.mp4' ? 'video/mp4' : ext === '.jpg' ? 'image/jpeg' : 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size });
       fs.createReadStream(filePath).pipe(res);
     } else {
       res.writeHead(404);
@@ -92,6 +93,7 @@ const server = http.createServer((req, res) => {
     let phone = '';
     let fileName = '';
     let fileSize = 0;
+    let isVideo = true;
     const chunks = [];
 
     const busboy = Busboy({ 
@@ -107,35 +109,45 @@ const server = http.createServer((req, res) => {
       const { filename, mimeType } = info;
       fileName = filename;
       
-      // Validate file type
-      if (!ALLOWED_TYPES.includes(mimeType) && !mimeType.startsWith('video/')) {
-        file.resume(); // Skip this file
+      // Accept any media file (video or image)
+      const isMedia = mimeType.includes('video') || 
+                      mimeType.includes('image') ||
+                      filename.endsWith('.mp4') || 
+                      filename.endsWith('.mov') ||
+                      filename.endsWith('.avi') ||
+                      filename.endsWith('.jpg') ||
+                      filename.endsWith('.jpeg') ||
+                      filename.endsWith('.png') ||
+                      filename.endsWith('.webp');
+      
+      // Detect if it's an image
+      if (mimeType.includes('image') || 
+          filename.endsWith('.jpg') || 
+          filename.endsWith('.jpeg') ||
+          filename.endsWith('.png') ||
+          filename.endsWith('.webp')) {
+        isVideo = false;
+      }
+
+      if (!isMedia) {
+        file.resume();
         return;
       }
 
       file.on('data', (data) => {
         fileSize += data.length;
         if (fileSize > MAX_FILE_SIZE) {
-          file.destroy(); // Stop receiving
+          file.destroy();
           return;
         }
         chunks.push(data);
       });
-
-      file.on('limit', () => {
-        file.destroy();
-      });
-    });
-
-    busboy.on('filesLimit', () => {
-      res.writeHead(400);
-      res.end(JSON.stringify({ status: 'error', error: 'Too many files' }));
     });
 
     busboy.on('finish', async () => {
       if (chunks.length === 0) {
         res.writeHead(400);
-        res.end(JSON.stringify({ status: 'error', error: 'No valid video file' }));
+        res.end(JSON.stringify({ status: 'error', error: 'No valid media file' }));
         return;
       }
 
@@ -149,9 +161,14 @@ const server = http.createServer((req, res) => {
         const host = req.headers.host;
         const fileUrl = `${protocol}://${host}/files/${uniqueName}`;
 
-        console.log(`📤 Sending HD video (${(fileSize/1048576).toFixed(2)} MB)...`);
+        const mediaType = isVideo ? 'Video' : 'Photo';
+        console.log(`📤 Sending HD ${mediaType} (${(fileSize/1048576).toFixed(2)} MB)...`);
 
-        const result = await sendWhatsAppMessage(fileUrl, '🎥 HD Video ready! Forward this to your Status.');
+        const result = await sendWhatsAppMessage(
+          fileUrl, 
+          `🎥 HD ${mediaType} ready! Forward this to your Status.`,
+          isVideo
+        );
 
         if (result.error) {
           console.error('❌ WhatsApp error:', result.error.message);
@@ -186,4 +203,3 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
-
