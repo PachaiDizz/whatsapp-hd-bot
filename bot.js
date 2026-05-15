@@ -5,7 +5,7 @@ const path = require('path');
 const Busboy = require('busboy');
 
 const ACCOUNT_SID = process.env.TWILIO_SID || 'ACe59ae2cb5e351127addc181fd1447a7d';
-const AUTH_TOKEN = process.env.TWILIO_TOKEN || '4d4eb664210553dbe04cc6408bfaa7c1';
+const AUTH_TOKEN = process.env.TWILIO_TOKEN || '9f5fcebb6ac7ac2c279da965b3ca6d38';
 const FROM_NUMBER = 'whatsapp:+14155238886';
 const TO_NUMBER = process.env.TO_NUMBER || '601116266163';
 const PORT = process.env.PORT || 10000;
