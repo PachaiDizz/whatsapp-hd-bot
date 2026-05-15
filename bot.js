@@ -16,7 +16,9 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
 const client = twilio(ACCOUNT_SID, AUTH_TOKEN);
 
-console.log('🤖 Bot started (Twilio WhatsApp)!\n');
+console.log('🤖 Bot started (Twilio WhatsApp)!');
+console.log('🔑 SID:', ACCOUNT_SID.substring(0, 8) + '...');
+console.log('🔑 Token:', AUTH_TOKEN ? 'YES (' + AUTH_TOKEN.length + ' chars)' : 'NO');
 
 fs.readdir(UPLOAD_DIR, (err, files) => {
   if (!err) {
@@ -144,3 +146,4 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
+
