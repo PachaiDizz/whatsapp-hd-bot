@@ -21,6 +21,12 @@ const ACCOUNTS = [
     token: process.env.TWILIO_TOKEN_3 || '',
     from: 'whatsapp:+14155238886'
   }
+  {
+      sid: 'ACdbf642024a8a0304a808a63cd9f16998',
+      token: process.env.TWILIO_TOKEN_3 || '',
+      from: 'whatsapp:+14155238886'
+  }  
+  
 ];
 
 let accountIndex = 0;
