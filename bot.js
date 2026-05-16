@@ -144,12 +144,19 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       console.log('🔔 WEBHOOK HIT!');
       console.log('📦 RAW BODY:', body);
+      console.log('📦 CONTENT-TYPE:', req.headers['content-type']);
 
-      const params = new URLSearchParams(body);
-      const fromNumber = params.get('From') || '';
+      // Try both parsing methods
+      let fromNumber = '';
+      try {
+        const params = new URLSearchParams(body);
+        fromNumber = params.get('From') || '';
+        console.log('📱 URLSearchParams From:', fromNumber);
+      } catch(e) {
+        console.log('❌ Parse error:', e);
+      }
+
       const phone = fromNumber.replace('whatsapp:+', '').trim();
-
-      console.log('📱 From:', fromNumber);
       console.log('📱 Phone cleaned:', phone);
 
       if (phone) {
