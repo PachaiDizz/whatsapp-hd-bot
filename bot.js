@@ -4,13 +4,16 @@ const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
 
-// Multiple Twilio accounts (20/day)
+// Multiple Twilio accounts
 const ACCOUNTS = [
-  { sid: 'ACe59ae2cb5e351127addc181fd1447a7d', token: process.env.TWILIO_TOKEN_1 || '', from: 'whatsapp:+14155238886' },
-  { sid: 'AC1171ed8c0b982bf93f1abaece8bedb06', token: process.env.TWILIO_TOKEN_2 || '', from: 'whatsapp:+14155238886' },
-  { sid: 'AC52a45e18747ad646fcbf4d68ab692f92', token: process.env.TWILIO_TOKEN_3 || '', from: 'whatsapp:+14155238886' },
-  { sid: 'ACdbf642024a8a0304a808a63cd9f16998', token: process.env.TWILIO_TOKEN_4 || '', from: 'whatsapp:+14155238886' },
+  { sid: 'ACe59ae2cb5e351127addc181fd1447a7d', token: process.env.TWILIO_TOKEN_1 || '', from: 'whatsapp:+14155238886', label: 'Account 1' },
+  { sid: 'AC1171ed8c0b982bf93f1abaece8bedb06', token: process.env.TWILIO_TOKEN_2 || '', from: 'whatsapp:+14155238886', label: 'Account 2' },
+  { sid: 'AC52a45e18747ad646fcbf4d68ab692f92', token: process.env.TWILIO_TOKEN_3 || '', from: 'whatsapp:+14155238886', label: 'Account 3' },
+  { sid: 'ACdbf642024a8a0304a808a63cd9f16998', token: process.env.TWILIO_TOKEN_4 || '', from: 'whatsapp:+14155238886', label: 'Account 4' },
 ];
+
+const DAILY_LIMIT_PER_ACCOUNT = 5; // Twilio sandbox free limit per account per day
+const TOTAL_DAILY_LIMIT = ACCOUNTS.length * DAILY_LIMIT_PER_ACCOUNT; // 20 total
 
 let accountIndex = 0;
 const PORT = process.env.PORT || 10000;
@@ -20,11 +23,41 @@ const UPLOAD_DIR = '/tmp/uploads';
 // Stores list of { phone, timestamp } from incoming WhatsApp messages
 const verifications = [];
 
+// Usage tracking per account per day
+// { 'Account 1': { count: 3, date: '2026-05-16' }, ... }
+const usageTracker = {};
+
+function getTodayDate() {
+  return new Date().toISOString().split('T')[0]; // e.g. "2026-05-16"
+}
+
+function getUsage(label) {
+  const today = getTodayDate();
+  if (!usageTracker[label] || usageTracker[label].date !== today) {
+    usageTracker[label] = { count: 0, date: today };
+  }
+  return usageTracker[label];
+}
+
+function incrementUsage(label) {
+  const usage = getUsage(label);
+  usage.count++;
+}
+
+function getRemainingForAccount(label) {
+  const usage = getUsage(label);
+  return Math.max(0, DAILY_LIMIT_PER_ACCOUNT - usage.count);
+}
+
+function getTotalRemaining() {
+  return ACCOUNTS.reduce((sum, acc) => sum + getRemainingForAccount(acc.label), 0);
+}
+
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-console.log('🤖 Bot started (4-Account Twilio + Timestamp Verification)!');
+console.log('🤖 Bot started (4-Account Twilio + Usage Tracking)!');
 console.log('🔑 Accounts loaded:', ACCOUNTS.length);
-console.log('📊 Max messages/day:', ACCOUNTS.length * 5);
+console.log('📊 Total daily limit:', TOTAL_DAILY_LIMIT, 'messages');
 
 fs.readdir(UPLOAD_DIR, (err, files) => {
   if (!err) {
@@ -92,10 +125,33 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ── Usage / Status endpoint ───────────────────────────────
+  // GET /status → returns remaining messages per account and total
+  if (req.method === 'GET' && req.url === '/status') {
+    const today = getTodayDate();
+    const accounts = ACCOUNTS.map(acc => ({
+      label: acc.label,
+      used: getUsage(acc.label).count,
+      remaining: getRemainingForAccount(acc.label),
+      limit: DAILY_LIMIT_PER_ACCOUNT,
+    }));
+    const totalRemaining = getTotalRemaining();
+    const totalUsed = TOTAL_DAILY_LIMIT - totalRemaining;
+
+    console.log(`📊 Status check — ${totalRemaining}/${TOTAL_DAILY_LIMIT} remaining today`);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      date: today,
+      totalLimit: TOTAL_DAILY_LIMIT,
+      totalUsed,
+      totalRemaining,
+      accounts,
+    }));
+    return;
+  }
+
   // ── Phone lookup by timestamp ─────────────────────────────
-  // Flutter records timestamp when user taps "Verify Now"
-  // Then calls GET /phone-by-time/<timestamp> when app resumes
-  // We find the verification closest to that timestamp (within 2 mins)
   if (req.method === 'GET' && req.url.startsWith('/phone-by-time/')) {
     const tsStr = req.url.replace('/phone-by-time/', '').split('?')[0];
     const appTimestamp = parseInt(tsStr, 10);
@@ -133,7 +189,7 @@ const server = http.createServer((req, res) => {
   // ── Health check ──────────────────────────────────────────
   if (req.method === 'GET') {
     res.writeHead(200);
-    res.end('Bot running');
+    res.end(`Bot running — ${getTotalRemaining()}/${TOTAL_DAILY_LIMIT} messages remaining today`);
     return;
   }
 
@@ -146,7 +202,6 @@ const server = http.createServer((req, res) => {
       console.log('📦 RAW BODY:', body);
       console.log('📦 CONTENT-TYPE:', req.headers['content-type']);
 
-      // Try both parsing methods
       let fromNumber = '';
       try {
         const params = new URLSearchParams(body);
@@ -220,6 +275,14 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      // Check if any messages remaining
+      if (getTotalRemaining() === 0) {
+        console.log('❌ Daily limit reached across all accounts');
+        res.writeHead(429);
+        res.end(JSON.stringify({ status: 'error', error: 'Daily limit reached. Try again tomorrow.' }));
+        return;
+      }
+
       try {
         const videoData = Buffer.concat(chunks);
         const uniqueName = `${Date.now()}_${path.basename(fileName)}`;
@@ -233,8 +296,9 @@ const server = http.createServer((req, res) => {
         const account = ACCOUNTS[accountIndex % ACCOUNTS.length];
         accountIndex++;
 
-        console.log(`📤 Account ${((accountIndex - 1) % ACCOUNTS.length) + 1} → ${phone}`);
+        console.log(`📤 ${account.label} → ${phone}`);
         console.log(`📤 Sending (${(fileSize / 1048576).toFixed(2)} MB)...`);
+        console.log(`📊 Remaining before send: ${getTotalRemaining()}/${TOTAL_DAILY_LIMIT}`);
 
         const result = await sendTwilioMedia(fileUrl, isVideo, account, phone);
 
@@ -247,14 +311,16 @@ const server = http.createServer((req, res) => {
             res.writeHead(500);
             res.end(JSON.stringify({ status: 'error', error: 'All accounts exhausted' }));
           } else {
-            console.log('✅ Sent on retry!');
+            incrementUsage(nextAccount.label);
+            console.log(`✅ Sent on retry! Remaining: ${getTotalRemaining()}/${TOTAL_DAILY_LIMIT}`);
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: 'sent' }));
+            res.end(JSON.stringify({ status: 'sent', remaining: getTotalRemaining() }));
           }
         } else {
-          console.log('✅ Sent! SID:', result.sid);
+          incrementUsage(account.label);
+          console.log(`✅ Sent! SID: ${result.sid} | Remaining: ${getTotalRemaining()}/${TOTAL_DAILY_LIMIT}`);
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'sent' }));
+          res.end(JSON.stringify({ status: 'sent', remaining: getTotalRemaining() }));
           setTimeout(() => { try { fs.unlinkSync(filePath); } catch (_) {} }, 5 * 60 * 1000);
         }
       } catch (err) {
@@ -275,3 +341,4 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
+
