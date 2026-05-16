@@ -138,22 +138,24 @@ const server = http.createServer((req, res) => {
   }
 
   // ── Twilio Webhook ────────────────────────────────────────
-  // Fires when user sends "join nodded-higher" on WhatsApp
-  // Records their phone number + server timestamp
   if (req.method === 'POST' && req.url === '/webhook') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
+      console.log('🔔 WEBHOOK HIT!');
+      console.log('📦 RAW BODY:', body);
+
       const params = new URLSearchParams(body);
       const fromNumber = params.get('From') || '';
       const phone = fromNumber.replace('whatsapp:+', '').trim();
 
+      console.log('📱 From:', fromNumber);
+      console.log('📱 Phone cleaned:', phone);
+
       if (phone) {
         const entry = { phone, timestamp: Date.now() };
         verifications.push(entry);
-        console.log(`📱 Join received: ${phone} at ${new Date(entry.timestamp).toISOString()}`);
-
-        // Keep only last 100 entries to avoid memory buildup
+        console.log(`✅ Stored: ${phone} at ${new Date(entry.timestamp).toISOString()}`);
         if (verifications.length > 100) verifications.shift();
       } else {
         console.log('⚠️ Webhook received but no phone found');
