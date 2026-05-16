@@ -16,8 +16,6 @@ let accountIndex = 0;
 const PORT = process.env.PORT || 10000;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const UPLOAD_DIR = '/tmp/uploads';
-
-// In-memory phone storage (key: sessionId, value: phone number)
 const userPhones = {};
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
@@ -75,7 +73,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Serve uploaded files ──
+  // Serve uploaded files
   if (req.method === 'GET' && req.url.startsWith('/files/')) {
     const fileName = path.basename(req.url.replace('/files/', ''));
     const filePath = path.join(UPLOAD_DIR, fileName);
@@ -92,11 +90,21 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Phone lookup ──
+  // Phone lookup by session
   if (req.method === 'GET' && req.url.startsWith('/phone/')) {
     const sessionId = req.url.replace('/phone/', '').split('?')[0];
     const phone = userPhones[sessionId] || '';
     console.log('🔍 Phone lookup:', sessionId, '→', phone || 'not found');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ phone }));
+    return;
+  }
+
+  // Latest phone lookup
+  if (req.method === 'GET' && req.url === '/latest-phone') {
+    const phones = Object.values(userPhones);
+    const phone = phones[phones.length - 1] || '';
+    console.log('🔍 Latest phone →', phone || 'not found');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ phone }));
     return;
@@ -108,7 +116,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Twilio Webhook: captures phone from incoming messages ──
+  // Twilio Webhook - captures phone from incoming messages
   if (req.method === 'POST' && req.url === '/webhook') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -127,7 +135,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Upload endpoint ──
+  // Upload endpoint
   if (req.method === 'POST' && req.url === '/upload') {
     let phone = '';
     let fileName = '';
