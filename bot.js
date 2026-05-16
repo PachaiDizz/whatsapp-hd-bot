@@ -16,11 +16,13 @@ let accountIndex = 0;
 const PORT = process.env.PORT || 10000;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const UPLOAD_DIR = '/tmp/uploads';
+
+// { sessionId -> phoneNumber }
 const userPhones = {};
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-console.log('🤖 Bot started (4-Account Twilio + Phone Detection)!');
+console.log('🤖 Bot started (4-Account Twilio + Session Verification)!');
 console.log('🔑 Accounts loaded:', ACCOUNTS.length);
 console.log('📊 Max messages/day:', ACCOUNTS.length * 5);
 
@@ -73,7 +75,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Serve uploaded files
+  // ── Serve uploaded files ────────────────────────────────
   if (req.method === 'GET' && req.url.startsWith('/files/')) {
     const fileName = path.basename(req.url.replace('/files/', ''));
     const filePath = path.join(UPLOAD_DIR, fileName);
@@ -90,9 +92,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Phone lookup by session
+  // ── Phone lookup by session ID ──────────────────────────
+  // Flutter app calls GET /phone/<sessionId> after user sends WhatsApp message
   if (req.method === 'GET' && req.url.startsWith('/phone/')) {
-    const sessionId = req.url.replace('/phone/', '').split('?')[0];
+    const sessionId = req.url.replace('/phone/', '').split('?')[0].trim().toLowerCase();
     const phone = userPhones[sessionId] || '';
     console.log('🔍 Phone lookup:', sessionId, '→', phone || 'not found');
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -100,42 +103,53 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Latest phone lookup
-  if (req.method === 'GET' && req.url === '/latest-phone') {
-    const phones = Object.values(userPhones);
-    const phone = phones[phones.length - 1] || '';
-    console.log('🔍 Latest phone →', phone || 'not found');
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ phone }));
-    return;
-  }
-
+  // ── Health check ────────────────────────────────────────
   if (req.method === 'GET') {
     res.writeHead(200);
     res.end('Bot running');
     return;
   }
 
-  // Twilio Webhook - captures phone from incoming messages
+  // ── Twilio Webhook ──────────────────────────────────────
+  // Receives incoming WhatsApp messages
+  // User sends: "verify <sessionId>" e.g. "verify k7x9mq"
+  // Bot stores: userPhones["k7x9mq"] = "601116266163"
   if (req.method === 'POST' && req.url === '/webhook') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
       const params = new URLSearchParams(body);
       const fromNumber = params.get('From') || '';
-      const phone = fromNumber.replace('whatsapp:+', '');
+      const msgBody = (params.get('Body') || '').trim().toLowerCase();
+      const phone = fromNumber.replace('whatsapp:+', '').trim();
+
+      console.log('📨 Incoming message:', msgBody, '| From:', phone);
+
       if (phone) {
-        const sessionId = phone.substring(phone.length - 6);
-        userPhones[sessionId] = phone;
-        console.log('📱 Verified phone:', phone, '(session:', sessionId + ')');
+        // Match "verify <sessionId>"
+        if (msgBody.startsWith('verify ')) {
+          const sessionId = msgBody.split(' ')[1]?.trim();
+          if (sessionId) {
+            userPhones[sessionId] = phone;
+            console.log(`✅ Session verified: [${sessionId}] → ${phone}`);
+          } else {
+            console.log('⚠️ verify message missing session ID');
+          }
+        } else {
+          // Any other message — log it but don't store
+          console.log('ℹ️ Unrecognized message (ignored):', msgBody);
+        }
+      } else {
+        console.log('⚠️ No phone number in webhook payload');
       }
+
       res.writeHead(200, { 'Content-Type': 'text/xml' });
       res.end('<Response></Response>');
     });
     return;
   }
 
-  // Upload endpoint
+  // ── Upload endpoint ─────────────────────────────────────
   if (req.method === 'POST' && req.url === '/upload') {
     let phone = '';
     let fileName = '';
@@ -156,7 +170,8 @@ const server = http.createServer((req, res) => {
                       filename.endsWith('.mp4') || filename.endsWith('.jpg') ||
                       filename.endsWith('.jpeg') || filename.endsWith('.png');
       if (!isMedia) { file.resume(); return; }
-      if (mimeType.includes('image') || filename.endsWith('.jpg') || filename.endsWith('.jpeg') || filename.endsWith('.png')) {
+      if (mimeType.includes('image') || filename.endsWith('.jpg') ||
+          filename.endsWith('.jpeg') || filename.endsWith('.png')) {
         isVideo = false;
       }
       file.on('data', (data) => {
@@ -173,6 +188,14 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      // Reject upload if no phone number provided
+      if (!phone) {
+        console.log('❌ Upload rejected: no phone number');
+        res.writeHead(400);
+        res.end(JSON.stringify({ status: 'error', error: 'Phone number required' }));
+        return;
+      }
+
       try {
         const videoData = Buffer.concat(chunks);
         const uniqueName = `${Date.now()}_${path.basename(fileName)}`;
@@ -186,17 +209,18 @@ const server = http.createServer((req, res) => {
         const account = ACCOUNTS[accountIndex % ACCOUNTS.length];
         accountIndex++;
 
-        const toNumber = phone || '601116266163';
-        console.log(`📤 Account ${((accountIndex - 1) % ACCOUNTS.length) + 1} → ${toNumber}`);
-        console.log(`📤 Sending (${(fileSize/1048576).toFixed(2)} MB)...`);
+        console.log(`📤 Account ${((accountIndex - 1) % ACCOUNTS.length) + 1} → ${phone}`);
+        console.log(`📤 Sending (${(fileSize / 1048576).toFixed(2)} MB)...`);
 
-        const result = await sendTwilioMedia(fileUrl, isVideo, account, toNumber);
+        const result = await sendTwilioMedia(fileUrl, isVideo, account, phone);
 
         if (!result.sid) {
+          console.log('⚠️ First account failed, retrying with next...');
           const nextAccount = ACCOUNTS[accountIndex % ACCOUNTS.length];
           accountIndex++;
-          const retryResult = await sendTwilioMedia(fileUrl, isVideo, nextAccount, toNumber);
+          const retryResult = await sendTwilioMedia(fileUrl, isVideo, nextAccount, phone);
           if (!retryResult.sid) {
+            console.log('❌ All retry accounts failed');
             res.writeHead(500);
             res.end(JSON.stringify({ status: 'error', error: 'All accounts exhausted' }));
           } else {
