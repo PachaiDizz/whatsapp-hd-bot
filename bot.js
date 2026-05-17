@@ -12,23 +12,28 @@ const ACCOUNTS = [
   { sid: 'ACdbf642024a8a0304a808a63cd9f16998', token: process.env.TWILIO_TOKEN_4 || '', from: 'whatsapp:+14155238886', label: 'Account 4' },
 ];
 
-const DAILY_LIMIT_PER_ACCOUNT = 5; // Twilio sandbox free limit per account per day
-const TOTAL_DAILY_LIMIT = ACCOUNTS.length * DAILY_LIMIT_PER_ACCOUNT; // 20 total
+const DAILY_LIMIT_PER_ACCOUNT = 5;
+const TOTAL_DAILY_LIMIT = ACCOUNTS.length * DAILY_LIMIT_PER_ACCOUNT;
 
 let accountIndex = 0;
 const PORT = process.env.PORT || 10000;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const UPLOAD_DIR = '/tmp/uploads';
 
-// Stores list of { phone, timestamp } from incoming WhatsApp messages
+// Verification storage
 const verifications = [];
 
-// Usage tracking per account per day
-// { 'Account 1': { count: 3, date: '2026-05-16' }, ... }
+// Lifetime usage tracking (survives app reinstalls)
+const phoneLifetimeUsage = {};
+const MAX_LIFETIME_USES = 3;
+const DEVELOPER_NUMBER = '601116266163';
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || 'dev-secret-key-2024';
+
+// Daily usage per account
 const usageTracker = {};
 
 function getTodayDate() {
-  return new Date().toISOString().split('T')[0]; // e.g. "2026-05-16"
+  return new Date().toISOString().split('T')[0];
 }
 
 function getUsage(label) {
@@ -55,9 +60,11 @@ function getTotalRemaining() {
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-console.log('🤖 Bot started (4-Account Twilio + Usage Tracking)!');
+console.log('🤖 Bot started (4-Account Twilio + Lifetime Tracking)!');
 console.log('🔑 Accounts loaded:', ACCOUNTS.length);
 console.log('📊 Total daily limit:', TOTAL_DAILY_LIMIT, 'messages');
+console.log('👑 Developer:', DEVELOPER_NUMBER, '(unlimited)');
+console.log('🔒 Admin key:', ADMIN_API_KEY ? 'SET' : 'NOT SET');
 
 fs.readdir(UPLOAD_DIR, (err, files) => {
   if (!err) {
@@ -108,7 +115,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Serve uploaded files ──────────────────────────────────
+  // ── Serve uploaded files ──
   if (req.method === 'GET' && req.url.startsWith('/files/')) {
     const fileName = path.basename(req.url.replace('/files/', ''));
     const filePath = path.join(UPLOAD_DIR, fileName);
@@ -125,111 +132,83 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Usage / Status endpoint ───────────────────────────────
-  // GET /status → returns remaining messages per account and total
-  if (req.method === 'GET' && req.url === '/status') {
-    const today = getTodayDate();
-    const accounts = ACCOUNTS.map(acc => ({
-      label: acc.label,
-      used: getUsage(acc.label).count,
-      remaining: getRemainingForAccount(acc.label),
-      limit: DAILY_LIMIT_PER_ACCOUNT,
-    }));
-    const totalRemaining = getTotalRemaining();
-    const totalUsed = TOTAL_DAILY_LIMIT - totalRemaining;
-
-    console.log(`📊 Status check — ${totalRemaining}/${TOTAL_DAILY_LIMIT} remaining today`);
-
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      date: today,
-      totalLimit: TOTAL_DAILY_LIMIT,
-      totalUsed,
-      totalRemaining,
-      accounts,
-    }));
-    return;
-  }
-
-  // ── Phone lookup by timestamp ─────────────────────────────
+  // ── Phone lookup by timestamp ──
   if (req.method === 'GET' && req.url.startsWith('/phone-by-time/')) {
-    const tsStr = req.url.replace('/phone-by-time/', '').split('?')[0];
-    const appTimestamp = parseInt(tsStr, 10);
-
-    if (isNaN(appTimestamp)) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ phone: '', error: 'Invalid timestamp' }));
-      return;
-    }
-
-    const TWO_MINUTES = 2 * 60 * 1000;
-    let closest = null;
-    let closestDiff = Infinity;
-
-    for (const entry of verifications) {
-      const diff = Math.abs(entry.timestamp - appTimestamp);
-      if (diff < TWO_MINUTES && diff < closestDiff) {
-        closest = entry;
-        closestDiff = diff;
+    const timestamp = parseInt(req.url.replace('/phone-by-time/', '').split('?')[0]);
+    let bestPhone = '';
+    let bestDiff = Infinity;
+    for (const v of verifications) {
+      const diff = Math.abs(v.timestamp - timestamp);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestPhone = v.phone;
       }
     }
-
-    if (closest) {
-      console.log(`✅ Phone matched: ${closest.phone} (diff: ${closestDiff}ms)`);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ phone: closest.phone }));
-    } else {
-      console.log(`⚠️ No match found for timestamp: ${appTimestamp}`);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ phone: '' }));
-    }
+    console.log('🔍 Phone by time →', bestPhone || 'not found');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ phone: bestPhone }));
     return;
   }
 
-  // ── Health check ──────────────────────────────────────────
+  // ── Admin: Check user usage ──
+  if (req.method === 'GET' && req.url.startsWith('/admin/usage/')) {
+    const phone = req.url.replace('/admin/usage/', '').split('?')[0];
+    const used = phoneLifetimeUsage[phone] || 0;
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ phone, used, remaining: MAX_LIFETIME_USES - used, isDeveloper: phone === DEVELOPER_NUMBER }));
+    return;
+  }
+
   if (req.method === 'GET') {
     res.writeHead(200);
-    res.end(`Bot running — ${getTotalRemaining()}/${TOTAL_DAILY_LIMIT} messages remaining today`);
+    res.end('Bot running');
     return;
   }
 
-  // ── Twilio Webhook ────────────────────────────────────────
+  // ── Twilio Webhook ──
   if (req.method === 'POST' && req.url === '/webhook') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
-      console.log('🔔 WEBHOOK HIT!');
-      console.log('📦 RAW BODY:', body);
-      console.log('📦 CONTENT-TYPE:', req.headers['content-type']);
-
-      let fromNumber = '';
-      try {
-        const params = new URLSearchParams(body);
-        fromNumber = params.get('From') || '';
-        console.log('📱 URLSearchParams From:', fromNumber);
-      } catch(e) {
-        console.log('❌ Parse error:', e);
-      }
-
-      const phone = fromNumber.replace('whatsapp:+', '').trim();
-      console.log('📱 Phone cleaned:', phone);
-
+      const params = new URLSearchParams(body);
+      const fromNumber = params.get('From') || '';
+      const phone = fromNumber.replace('whatsapp:+', '');
       if (phone) {
-        const entry = { phone, timestamp: Date.now() };
-        verifications.push(entry);
-        console.log(`✅ Stored: ${phone} at ${new Date(entry.timestamp).toISOString()}`);
-        if (verifications.length > 100) verifications.shift();
-      } else {
-        console.log('⚠️ Webhook received but no phone found');
+        verifications.push({ phone, timestamp: Date.now() });
+        console.log('📱 Verified phone:', phone);
       }
-
       res.writeHead(200, { 'Content-Type': 'text/xml' });
       res.end('<Response></Response>');
     });
     return;
   }
 
-  // ── Upload endpoint ───────────────────────────────────────
+  // ── Admin: Reset user's lifetime usage ──
+  if (req.method === 'POST' && req.url === '/admin/reset') {
+    const authKey = req.headers['x-api-key'] || '';
+    if (authKey !== ADMIN_API_KEY) {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { phone } = JSON.parse(body);
+        phoneLifetimeUsage[phone] = 0;
+        console.log('🔄 Admin reset:', phone);
+        res.writeHead(200);
+        res.end(JSON.stringify({ status: 'reset', phone, remaining: MAX_LIFETIME_USES }));
+      } catch (e) {
+        res.writeHead(400);
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+
+  // ── Upload endpoint ──
   if (req.method === 'POST' && req.url === '/upload') {
     let phone = '';
     let fileName = '';
@@ -250,8 +229,7 @@ const server = http.createServer((req, res) => {
                       filename.endsWith('.mp4') || filename.endsWith('.jpg') ||
                       filename.endsWith('.jpeg') || filename.endsWith('.png');
       if (!isMedia) { file.resume(); return; }
-      if (mimeType.includes('image') || filename.endsWith('.jpg') ||
-          filename.endsWith('.jpeg') || filename.endsWith('.png')) {
+      if (mimeType.includes('image') || filename.endsWith('.jpg') || filename.endsWith('.jpeg') || filename.endsWith('.png')) {
         isVideo = false;
       }
       file.on('data', (data) => {
@@ -268,21 +246,6 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      if (!phone) {
-        console.log('❌ Upload rejected: no phone number');
-        res.writeHead(400);
-        res.end(JSON.stringify({ status: 'error', error: 'Phone number required. Please verify WhatsApp first.' }));
-        return;
-      }
-
-      // Check if any messages remaining
-      if (getTotalRemaining() === 0) {
-        console.log('❌ Daily limit reached across all accounts');
-        res.writeHead(429);
-        res.end(JSON.stringify({ status: 'error', error: 'Daily limit reached. Try again tomorrow.' }));
-        return;
-      }
-
       try {
         const videoData = Buffer.concat(chunks);
         const uniqueName = `${Date.now()}_${path.basename(fileName)}`;
@@ -293,35 +256,79 @@ const server = http.createServer((req, res) => {
         const host = req.headers.host;
         const fileUrl = `${protocol}://${host}/files/${uniqueName}`;
 
-        const account = ACCOUNTS[accountIndex % ACCOUNTS.length];
-        accountIndex++;
+        const toNumber = phone || '601116266163';
 
-        console.log(`📤 ${account.label} → ${phone}`);
-        console.log(`📤 Sending (${(fileSize / 1048576).toFixed(2)} MB)...`);
-        console.log(`📊 Remaining before send: ${getTotalRemaining()}/${TOTAL_DAILY_LIMIT}`);
-
-        const result = await sendTwilioMedia(fileUrl, isVideo, account, phone);
-
-        if (!result.sid) {
-          console.log('⚠️ First account failed, retrying...');
-          const nextAccount = ACCOUNTS[accountIndex % ACCOUNTS.length];
-          accountIndex++;
-          const retryResult = await sendTwilioMedia(fileUrl, isVideo, nextAccount, phone);
-          if (!retryResult.sid) {
-            res.writeHead(500);
-            res.end(JSON.stringify({ status: 'error', error: 'All accounts exhausted' }));
-          } else {
-            incrementUsage(nextAccount.label);
-            console.log(`✅ Sent on retry! Remaining: ${getTotalRemaining()}/${TOTAL_DAILY_LIMIT}`);
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: 'sent', remaining: getTotalRemaining() }));
+        // ── Lifetime usage check (skip developer) ──
+        if (toNumber !== DEVELOPER_NUMBER) {
+          const used = phoneLifetimeUsage[toNumber] || 0;
+          if (used >= MAX_LIFETIME_USES) {
+            console.log('🚫 Blocked:', toNumber, '(used', used, 'times)');
+            res.writeHead(403);
+            res.end(JSON.stringify({ status: 'blocked', error: 'Trial ended (3/3 uses). Contact developer.' }));
+            return;
           }
-        } else {
+        }
+
+        // Find account with remaining daily quota
+        let account = null;
+        for (let i = 0; i < ACCOUNTS.length; i++) {
+          const acc = ACCOUNTS[(accountIndex + i) % ACCOUNTS.length];
+          if (getRemainingForAccount(acc.label) > 0) {
+            account = acc;
+            accountIndex = (accountIndex + i + 1) % ACCOUNTS.length;
+            break;
+          }
+        }
+
+        if (!account) {
+          res.writeHead(429);
+          res.end(JSON.stringify({ status: 'error', error: 'Daily limit reached. Try again tomorrow.' }));
+          return;
+        }
+
+        console.log(`📤 ${account.label} → ${toNumber} (${(fileSize/1048576).toFixed(2)} MB)...`);
+
+        const result = await sendTwilioMedia(fileUrl, isVideo, account, toNumber);
+
+        if (result.sid) {
           incrementUsage(account.label);
-          console.log(`✅ Sent! SID: ${result.sid} | Remaining: ${getTotalRemaining()}/${TOTAL_DAILY_LIMIT}`);
+          
+          // Record lifetime usage (skip developer)
+          if (toNumber !== DEVELOPER_NUMBER) {
+            phoneLifetimeUsage[toNumber] = (phoneLifetimeUsage[toNumber] || 0) + 1;
+            console.log('📊 Lifetime:', toNumber, '→', phoneLifetimeUsage[toNumber], '/', MAX_LIFETIME_USES);
+          }
+          
+          console.log('✅ Sent! SID:', result.sid);
+          console.log('📊 Remaining today:', getTotalRemaining(), '/', TOTAL_DAILY_LIMIT);
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'sent', remaining: getTotalRemaining() }));
+          res.end(JSON.stringify({ status: 'sent' }));
           setTimeout(() => { try { fs.unlinkSync(filePath); } catch (_) {} }, 5 * 60 * 1000);
+        } else {
+          // Try next account
+          let sent = false;
+          for (let i = 1; i < ACCOUNTS.length; i++) {
+            const nextAcc = ACCOUNTS[(accountIndex + i) % ACCOUNTS.length];
+            if (getRemainingForAccount(nextAcc.label) > 0) {
+              const retryResult = await sendTwilioMedia(fileUrl, isVideo, nextAcc, toNumber);
+              if (retryResult.sid) {
+                incrementUsage(nextAcc.label);
+                if (toNumber !== DEVELOPER_NUMBER) {
+                  phoneLifetimeUsage[toNumber] = (phoneLifetimeUsage[toNumber] || 0) + 1;
+                  console.log('📊 Lifetime:', toNumber, '→', phoneLifetimeUsage[toNumber], '/', MAX_LIFETIME_USES);
+                }
+                console.log('✅ Sent on retry!');
+                res.writeHead(200);
+                res.end(JSON.stringify({ status: 'sent' }));
+                sent = true;
+                break;
+              }
+            }
+          }
+          if (!sent) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ status: 'error', error: 'All accounts failed or exhausted' }));
+          }
         }
       } catch (err) {
         console.error('❌ Error:', err.message);
