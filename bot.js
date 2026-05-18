@@ -4,17 +4,12 @@ const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
 
-// Multiple Twilio accounts
+// Single Twilio account
 const ACCOUNTS = [
   { sid: 'ACe59ae2cb5e351127addc181fd1447a7d', token: process.env.TWILIO_TOKEN_1 || '', from: 'whatsapp:+14155238886', label: 'Account 1' },
-  { sid: 'AC1171ed8c0b982bf93f1abaece8bedb06', token: process.env.TWILIO_TOKEN_2 || '', from: 'whatsapp:+14155238886', label: 'Account 2' },
-  { sid: 'AC52a45e18747ad646fcbf4d68ab692f92', token: process.env.TWILIO_TOKEN_3 || '', from: 'whatsapp:+14155238886', label: 'Account 3' },
-  { sid: 'ACdbf642024a8a0304a808a63cd9f16998', token: process.env.TWILIO_TOKEN_4 || '', from: 'whatsapp:+14155238886', label: 'Account 4' },
 ];
 
-const DAILY_LIMIT_PER_ACCOUNT = 5;
-const TOTAL_DAILY_LIMIT = ACCOUNTS.length * DAILY_LIMIT_PER_ACCOUNT;
-
+const DAILY_LIMIT = 5;
 let accountIndex = 0;
 const PORT = process.env.PORT || 10000;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -23,48 +18,34 @@ const UPLOAD_DIR = '/tmp/uploads';
 // Verification storage
 const verifications = [];
 
-// Lifetime usage tracking (survives app reinstalls)
+// Lifetime usage tracking
 const phoneLifetimeUsage = {};
 const MAX_LIFETIME_USES = 3;
 const DEVELOPER_NUMBER = '601116266163';
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || 'dev-secret-key-2024';
 
-// Daily usage per account
-const usageTracker = {};
+// Daily usage
+let dailyCount = 0;
+let dailyDate = '';
 
 function getTodayDate() {
   return new Date().toISOString().split('T')[0];
 }
 
-function getUsage(label) {
+function getRemaining() {
   const today = getTodayDate();
-  if (!usageTracker[label] || usageTracker[label].date !== today) {
-    usageTracker[label] = { count: 0, date: today };
+  if (dailyDate !== today) {
+    dailyCount = 0;
+    dailyDate = today;
   }
-  return usageTracker[label];
-}
-
-function incrementUsage(label) {
-  const usage = getUsage(label);
-  usage.count++;
-}
-
-function getRemainingForAccount(label) {
-  const usage = getUsage(label);
-  return Math.max(0, DAILY_LIMIT_PER_ACCOUNT - usage.count);
-}
-
-function getTotalRemaining() {
-  return ACCOUNTS.reduce((sum, acc) => sum + getRemainingForAccount(acc.label), 0);
+  return Math.max(0, DAILY_LIMIT - dailyCount);
 }
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-console.log('🤖 Bot started (4-Account Twilio + Lifetime Tracking)!');
-console.log('🔑 Accounts loaded:', ACCOUNTS.length);
-console.log('📊 Total daily limit:', TOTAL_DAILY_LIMIT, 'messages');
+console.log('🤖 Bot started (1-Account Twilio + Lifetime Tracking)!');
+console.log('📊 Daily limit:', DAILY_LIMIT, 'messages');
 console.log('👑 Developer:', DEVELOPER_NUMBER, '(unlimited)');
-console.log('🔒 Admin key:', ADMIN_API_KEY ? 'SET' : 'NOT SET');
 
 fs.readdir(UPLOAD_DIR, (err, files) => {
   if (!err) {
@@ -73,8 +54,9 @@ fs.readdir(UPLOAD_DIR, (err, files) => {
   }
 });
 
-function sendTwilioMedia(fileUrl, isVideo, account, toNumber) {
+function sendTwilioMedia(fileUrl, isVideo, toNumber) {
   return new Promise((resolve, reject) => {
+    const account = ACCOUNTS[0];
     const body = new URLSearchParams({
       From: account.from,
       To: `whatsapp:+${toNumber}`,
@@ -115,7 +97,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Serve uploaded files ──
+  // Serve files
   if (req.method === 'GET' && req.url.startsWith('/files/')) {
     const fileName = path.basename(req.url.replace('/files/', ''));
     const filePath = path.join(UPLOAD_DIR, fileName);
@@ -132,17 +114,14 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Phone lookup by timestamp ──
+  // Phone lookup
   if (req.method === 'GET' && req.url.startsWith('/phone-by-time/')) {
     const timestamp = parseInt(req.url.replace('/phone-by-time/', '').split('?')[0]);
     let bestPhone = '';
     let bestDiff = Infinity;
     for (const v of verifications) {
       const diff = Math.abs(v.timestamp - timestamp);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        bestPhone = v.phone;
-      }
+      if (diff < bestDiff) { bestDiff = diff; bestPhone = v.phone; }
     }
     console.log('🔍 Phone by time →', bestPhone || 'not found');
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -150,7 +129,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Admin: Check user usage ──
+  // Admin: Check usage
   if (req.method === 'GET' && req.url.startsWith('/admin/usage/')) {
     const phone = req.url.replace('/admin/usage/', '').split('?')[0];
     const used = phoneLifetimeUsage[phone] || 0;
@@ -165,7 +144,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Twilio Webhook ──
+  // Twilio Webhook
   if (req.method === 'POST' && req.url === '/webhook') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -183,7 +162,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Admin: Reset user's lifetime usage ──
+  // Admin: Reset
   if (req.method === 'POST' && req.url === '/admin/reset') {
     const authKey = req.headers['x-api-key'] || '';
     if (authKey !== ADMIN_API_KEY) {
@@ -208,7 +187,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── Upload endpoint ──
+  // Upload
   if (req.method === 'POST' && req.url === '/upload') {
     let phone = '';
     let fileName = '';
@@ -258,7 +237,7 @@ const server = http.createServer((req, res) => {
 
         const toNumber = phone || '601116266163';
 
-        // ── Lifetime usage check (skip developer) ──
+        // Lifetime usage check (skip developer)
         if (toNumber !== DEVELOPER_NUMBER) {
           const used = phoneLifetimeUsage[toNumber] || 0;
           if (used >= MAX_LIFETIME_USES) {
@@ -269,66 +248,32 @@ const server = http.createServer((req, res) => {
           }
         }
 
-        // Find account with remaining daily quota
-        let account = null;
-        for (let i = 0; i < ACCOUNTS.length; i++) {
-          const acc = ACCOUNTS[(accountIndex + i) % ACCOUNTS.length];
-          if (getRemainingForAccount(acc.label) > 0) {
-            account = acc;
-            accountIndex = (accountIndex + i + 1) % ACCOUNTS.length;
-            break;
-          }
-        }
-
-        if (!account) {
+        // Daily limit check
+        if (getRemaining() <= 0) {
           res.writeHead(429);
           res.end(JSON.stringify({ status: 'error', error: 'Daily limit reached. Try again tomorrow.' }));
           return;
         }
 
-        console.log(`📤 ${account.label} → ${toNumber} (${(fileSize/1048576).toFixed(2)} MB)...`);
+        console.log(`📤 Sending to ${toNumber} (${(fileSize/1048576).toFixed(2)} MB)...`);
 
-        const result = await sendTwilioMedia(fileUrl, isVideo, account, toNumber);
+        const result = await sendTwilioMedia(fileUrl, isVideo, toNumber);
 
         if (result.sid) {
-          incrementUsage(account.label);
-          
-          // Record lifetime usage (skip developer)
+          dailyCount++;
           if (toNumber !== DEVELOPER_NUMBER) {
             phoneLifetimeUsage[toNumber] = (phoneLifetimeUsage[toNumber] || 0) + 1;
             console.log('📊 Lifetime:', toNumber, '→', phoneLifetimeUsage[toNumber], '/', MAX_LIFETIME_USES);
           }
-          
           console.log('✅ Sent! SID:', result.sid);
-          console.log('📊 Remaining today:', getTotalRemaining(), '/', TOTAL_DAILY_LIMIT);
+          console.log('📊 Remaining today:', getRemaining(), '/', DAILY_LIMIT);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ status: 'sent' }));
           setTimeout(() => { try { fs.unlinkSync(filePath); } catch (_) {} }, 5 * 60 * 1000);
         } else {
-          // Try next account
-          let sent = false;
-          for (let i = 1; i < ACCOUNTS.length; i++) {
-            const nextAcc = ACCOUNTS[(accountIndex + i) % ACCOUNTS.length];
-            if (getRemainingForAccount(nextAcc.label) > 0) {
-              const retryResult = await sendTwilioMedia(fileUrl, isVideo, nextAcc, toNumber);
-              if (retryResult.sid) {
-                incrementUsage(nextAcc.label);
-                if (toNumber !== DEVELOPER_NUMBER) {
-                  phoneLifetimeUsage[toNumber] = (phoneLifetimeUsage[toNumber] || 0) + 1;
-                  console.log('📊 Lifetime:', toNumber, '→', phoneLifetimeUsage[toNumber], '/', MAX_LIFETIME_USES);
-                }
-                console.log('✅ Sent on retry!');
-                res.writeHead(200);
-                res.end(JSON.stringify({ status: 'sent' }));
-                sent = true;
-                break;
-              }
-            }
-          }
-          if (!sent) {
-            res.writeHead(500);
-            res.end(JSON.stringify({ status: 'error', error: 'All accounts failed or exhausted' }));
-          }
+          console.error('❌ Failed:', result.message || 'Unknown error');
+          res.writeHead(500);
+          res.end(JSON.stringify({ status: 'error', error: result.message || 'Send failed' }));
         }
       } catch (err) {
         console.error('❌ Error:', err.message);
@@ -348,4 +293,3 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
 });
-
